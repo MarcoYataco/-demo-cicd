@@ -1,16 +1,24 @@
-# api: Node.js con Express. Sigue las seis reglas del LAB-02:
-# tag fijo, dependencias antes que código, sin root, sin secretos, imagen chica, un proceso.
+﻿# Etapa 1: instalar dependencias de produccion.
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Etapa 2: imagen final sin npm.
 FROM node:22-alpine
 
 ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --omit=dev
+USER root
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx
 
+COPY --from=builder /app/node_modules ./node_modules
 COPY app.js server.js ./
 
-# node es el uid 1000 en la imagen oficial. Numérico para que Kubernetes pueda verificar runAsNonRoot.
 USER 1000
 EXPOSE 3000
 
