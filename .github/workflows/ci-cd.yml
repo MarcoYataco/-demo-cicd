@@ -42,3 +42,35 @@ jobs:
         with:
           dockerfile: Dockerfile
           recursive: true
+
+  sast:
+    name: SAST - Semgrep and Gitleaks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Run Semgrep
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            semgrep/semgrep:1.180.0 \
+            semgrep scan \
+            --config p/ci \
+            --config p/dockerfile \
+            --error
+
+      - name: Run Gitleaks
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            detect \
+            --source . \
+            --redact \
+            --exit-code 1
