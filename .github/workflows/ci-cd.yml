@@ -166,4 +166,4 @@ jobs:
           context: ./${{ matrix.service }}
           file: ./${{ matrix.service }}/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ github.repository }}-${{ matrix.service }}:sha-${{ github.sha }}
+          tags: ghcr.io/marcoyataco/demo-cicd-${{ matrix.service }}:sha-${{ github.sha }}
