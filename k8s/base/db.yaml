@@ -15,7 +15,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate   # una base de datos no se actualiza con rolling update: dos Postgres sobre el mismo volumen se pisan
+    type: Recreate
   selector:
     matchLabels:
       app: db
@@ -24,6 +24,8 @@ spec:
       labels:
         app: db
     spec:
+      securityContext:
+        fsGroup: 70
       imagePullSecrets:
         - name: ghcr
       containers:

@@ -1,4 +1,3 @@
-
 name: CI/CD - Demo Guestbook
 
 on:
@@ -97,6 +96,9 @@ jobs:
 
       - name: Run unit tests
         run: npm run test:unit
+
+      - name: Run site tests
+        run: npm run test:site
 
   test-integration:
     name: Integration Tests
@@ -209,3 +211,130 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '1'
           ignore-unfixed: false
+
+  deploy-dev:
+    name: Deploy DEV - Kubernetes and smoke tests
+    runs-on: ubuntu-latest
+    needs: security
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    environment: dev
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create DEV cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa
+        with:
+          cluster_name: dev
+
+      - name: Create namespace and temporary secrets
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          kubectl create namespace demo-dev
+          kubectl -n demo-dev create secret docker-registry ghcr \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USERNAME" \
+            --docker-password="$GHCR_PASSWORD"
+          kubectl -n demo-dev create secret generic db-credenciales \
+            --from-literal=DB_PASSWORD="$(openssl rand -hex 24)"
+
+      - name: Deploy scanned images
+        run: |
+          bash scripts/desplegar.sh \
+            k8s/overlays/dev \
+            ghcr.io/marcoyataco/demo-cicd \
+            "sha-${{ github.sha }}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n demo-dev rollout status deploy/db --timeout=180s
+          kubectl -n demo-dev rollout status deploy/api --timeout=180s
+          kubectl -n demo-dev rollout status deploy/web --timeout=180s
+
+      - name: Run smoke and integration tests against DEV
+        run: |
+          kubectl -n demo-dev port-forward svc/web 8080:80 > /tmp/dev-port-forward.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          curl --retry 15 --retry-connrefused --retry-delay 2 \
+            --fail --silent --show-error http://localhost:8080/api/health
+          bash scripts/smoke.sh http://localhost:8080
+          APP_URL=http://localhost:8080 npm run test:integration
+
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n demo-dev get all
+          kubectl -n demo-dev describe pods
+          kubectl -n demo-dev logs -l app=api --all-containers --tail=50 || true
+          kubectl -n demo-dev logs -l app=db --all-containers --tail=50 || true
+
+      - name: Delete temporary DEV cluster
+        if: always()
+        run: kind delete cluster --name dev
+
+  deploy-staging:
+    name: Deploy STAGING - Manual approval
+    needs: deploy-dev
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Windows, X64, staging]
+
+    environment:
+      name: staging
+      url: http://localhost:30080
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Deploy the same images tested in DEV
+        run: |
+          bash scripts/desplegar.sh \
+            k8s/overlays/staging \
+            ghcr.io/marcoyataco/demo-cicd \
+            "sha-${{ github.sha }}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n demo-staging rollout status deploy/db --timeout=180s
+          kubectl -n demo-staging rollout status deploy/api --timeout=180s
+          kubectl -n demo-staging rollout status deploy/web --timeout=180s
+
+      - name: Run smoke test
+        run: bash scripts/smoke.sh http://localhost:30080
+
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n demo-staging get all
+          kubectl -n demo-staging describe pods
+          kubectl -n demo-staging logs -l app=api --all-containers --tail=50 || true
+          kubectl -n demo-staging logs -l app=db --all-containers --tail=50 || true
